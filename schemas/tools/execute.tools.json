@@ -1,0 +1,33 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "fgs_submit_fact",
+      "description": "草稿：为本 step 准备收束 fact；可反复调用，后写覆盖前写。title 一句话可判读；大段数据写文件、content 只引用文件名。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title"],
+        "properties": {
+          "title": { "type": "string", "description": "<=120 字" },
+          "content": { "type": "string", "description": "本 step 的增量事实；超过 8KiB 时必须是文件路径" },
+          "stepId": { "type": "string", "description": "可选，覆盖本轮 step" }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "fgs_commit_step",
+      "description": "定稿：分配 fact_NNN，step.state=done, to=fact；写盘后本轮必须结束。无 submit 也强制落一条观察 Fact。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "stepId": { "type": "string", "description": "可选，覆盖本轮 step" }
+        }
+      }
+    }
+  }
+]

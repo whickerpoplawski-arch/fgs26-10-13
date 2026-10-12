@@ -1,0 +1,33 @@
+# Execute 工具 I/O 预制规范（CONTRACT §9）
+#
+# 环境工具由宿主（DSH）提供：bash / read / write / edit / glob / grep 等，
+# 参数形态以宿主 schema 为准；本插件只注册图工具并做角色隔离。
+role: execute
+tools:
+  - fgs_project
+  - fgs_status
+  - fgs_submit_fact
+  - fgs_commit_step
+  - bash
+  - read
+  - write
+  - edit
+  - glob
+  - grep
+forbidden_tools:
+  # Decide 专属：由 tools.guard 在 dispatch 层硬拒（本插件不做 schema 隐藏）
+  - fgs_satisfy_goal
+  - fgs_open_step
+  - fgs_drop_step
+  - fgs_change_step_priority
+  - fgs_reopen
+  - fgs_commit
+filter:
+  # env 工具 stdout/stderr 截断后进模型（噪声裁剪）
+  max_output_chars: 32000
+  truncate_marker: "…(truncated, see file)"
+notes:
+  - 一轮只吃一个 open step（取优先级最高的那个）
+  - 必须以一条新 Fact 收束；无 submit 也强制观察 Fact
+  - submit_fact title ≤ 120 字；content 超 8KiB 须是文件路径
+  - producedBy 指向的 step 必须是 open

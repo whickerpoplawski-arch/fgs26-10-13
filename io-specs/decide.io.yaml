@@ -1,0 +1,41 @@
+# Decide 工具 I/O 预制规范（CONTRACT §9）
+#
+# 原生插件里系统规则由 index.js 的 systemPrompt.section 注入；
+# 本文件是给 LLM 的预制 I/O 说明与过滤规则（人读 / 生成 prompt 用）。
+# 环境工具由宿主（DSH）提供，本插件不注册它们。
+role: decide
+tools:
+  - fgs_project
+  - fgs_seed
+  - fgs_status
+  - fgs_preview
+  - fgs_open_step
+  - fgs_drop_step
+  - fgs_change_step_priority
+  - fgs_satisfy_goal
+  - fgs_reopen
+  - fgs_commit
+forbidden:
+  # 角色物理隔离：Decide 会话不得调用环境执行工具
+  - bash
+  - read
+  - write
+  - edit
+  - glob
+  - grep
+  - 一切环境执行工具
+forbidden_tools:
+  # Execute 专属：由 tools.guard 在 dispatch 层硬拒（本插件不做 schema 隐藏，
+  # 因为 DSH 的 restrict 取交集、无法在角色切换时可靠松开）
+  - fgs_submit_fact
+  - fgs_commit_step
+filter:
+  # 工具返回给模型的文本：短确认 + 错误行；不回传大块数据
+  # （index.js 的 config.maxResultChars 默认 8000，与这里保持一致）
+  max_result_chars: 8000
+  truncate_marker: "…(truncated)"
+notes:
+  - satisfy_goal 必填 {goalId, reason, satisfiedBy}；缺任一字段当场拒收（进不了草稿）
+  - drop_step 必须 reason（空白视为缺失）
+  - commit 有 operations[] 时忽略草稿；任一操作失败则整批不落盘
+  - open_step 的 from 必须非空且引用已存在的 fact

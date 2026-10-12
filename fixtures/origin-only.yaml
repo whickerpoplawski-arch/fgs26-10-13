@@ -1,0 +1,16 @@
+facts:
+- id: fact_origin
+  title: "题目信息:"
+  createdAt: 2026-10-11T09:00:00.000Z
+  content: |-
+    {
+      "unique_code": "baidu-demo-01",
+      "target": "http://10.0.0.8:8080",
+      "hint": "拿到并提交 FLAG"
+    }
+goals:
+- id: goal_final
+  kind: final
+  criterion: 解决这道渗透题目，并提交全部 FLAG；多 FLAG 须全部有效提交
+  createdAt: 2026-10-11T09:00:00.000Z
+steps: []

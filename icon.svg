@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="FGS blackboard">
+  <rect x="6" y="10" width="52" height="36" rx="4" fill="#2f3540"/>
+  <rect x="10" y="14" width="44" height="28" rx="2" fill="#3f4a5a"/>
+  <path d="M14 22h14M14 28h10M14 34h16" stroke="#9fd2ff" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M38 20v16" stroke="#c9d6e5" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M38 21h9l-3 4 3 4h-9z" fill="#ffcc4d"/>
+  <path d="M22 50l-4 8M42 50l4 8" stroke="#8aa0b8" stroke-width="2.6" stroke-linecap="round"/>
+</svg>

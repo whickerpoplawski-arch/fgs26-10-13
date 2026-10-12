@@ -1,0 +1,14 @@
+# FGS 黑板插件（Host 半 + Client 半由 dsh.client 自动装载）
+- insert:
+    - id: fgs-deepseek
+      name: '@local/fgs-deepseek-dsh'
+      config:
+        stateDir: .fgs
+        # regex = 只校验 fact 文本里出现过 flag 形态；真正比赛建议改用 command：
+        # verifyMode: command
+        # verifyCommand: 'node /mnt/d/XunLei/med-lora/fgs26-10-12/tools/submit_flag.mjs'
+        #   （把证据写到 stdin，脚本调赛方提交接口，退出码 0 = 过；409 重复提交也按过）
+        verifyMode: regex
+        # 真实竞赛（百度）用小写 flag{...}：pattern 按小写写，靠 flagFlags: i 同时兼容 FLAG{...}
+        flagPattern: 'flag\{[^}\s]{4,}\}'
+        flagFlags: i

@@ -1,0 +1,38 @@
+facts:
+- id: fact_origin
+  title: "题目信息:"
+  createdAt: 2026-10-11T09:00:00.000Z
+  content: |-
+    {
+      "unique_code": "baidu-demo-01",
+      "target": "http://10.0.0.8:8080",
+      "hint": "拿到并提交 FLAG"
+    }
+- id: fact_001
+  title: "端口扫描: 仅 80/tcp 开放 HTTP"
+  createdAt: 2026-10-11T09:05:12.000Z
+  producedBy: step_001
+  content: 对 10.0.0.8 执行 nmap -sT -p-；仅 80 开放。原始输出见 workspace/step001_nmap.txt
+goals:
+- id: goal_final
+  kind: final
+  criterion: 解决这道渗透题目，并提交全部 FLAG；多 FLAG 须全部有效提交
+  createdAt: 2026-10-11T09:00:00.000Z
+steps:
+- id: step_001
+  action: 对目标做全端口探测并确认 Web 入口
+  from:
+  - fact_origin
+  actor: agent
+  priority: high
+  state: done
+  createdAt: 2026-10-11T09:01:00.000Z
+  to: fact_001
+- id: step_002
+  action: 探测 80 端口 Web 服务指纹与目录结构
+  from:
+  - fact_001
+  actor: agent
+  priority: high
+  state: open
+  createdAt: 2026-10-11T09:06:00.000Z
