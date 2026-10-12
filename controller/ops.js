@@ -23,24 +23,26 @@ export class WriteRejected extends Error {
   }
 }
 
-/** open_step：`from` 非空；可预分配 stepId（batch commit）。 */
-export function openStepOp({ action, from, actor = 'agent', priority = 'normal', stepId = null }) {
-  return { type: OP.OPEN_STEP, action, from, actor, priority, stepId };
+/** open_step：`from` 非空；可预分配 stepId（batch commit）。ownerSession 由打开它的会话写入。 */
+export function openStepOp({
+  action, from, actor = 'agent', priority = 'normal', stepId = null, ownerSession = null,
+}) {
+  return { type: OP.OPEN_STEP, action, from, actor, priority, stepId, ownerSession };
 }
 
-/** drop_step：必须 reason。 */
-export function dropStepOp({ stepId, reason }) {
-  return { type: OP.DROP_STEP, stepId, reason };
+/** drop_step：必须 reason。callerSession 用于拒绝改写别人持有的 step。 */
+export function dropStepOp({ stepId, reason, callerSession = null }) {
+  return { type: OP.DROP_STEP, stepId, reason, callerSession };
 }
 
 /** change_step_priority：reason 可选。 */
-export function changePriorityOp({ stepId, priority, reason = null }) {
-  return { type: OP.CHANGE_PRIORITY, stepId, priority, reason };
+export function changePriorityOp({ stepId, priority, reason = null, callerSession = null }) {
+  return { type: OP.CHANGE_PRIORITY, stepId, priority, reason, callerSession };
 }
 
-/** submit_fact：producedBy 必填（origin 种子除外）。 */
-export function submitFactOp({ title, content, producedBy }) {
-  return { type: OP.SUBMIT_FACT, title, content, producedBy };
+/** submit_fact：producedBy 必填（origin 种子除外）。callerSession 必须等于 step.ownerSession。 */
+export function submitFactOp({ title, content, producedBy, callerSession = null }) {
+  return { type: OP.SUBMIT_FACT, title, content, producedBy, callerSession };
 }
 
 /** origin 种题种子：唯一免 producedBy 的 fact 写入，同时种 goal_final。 */
