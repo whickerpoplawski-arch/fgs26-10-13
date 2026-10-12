@@ -138,6 +138,44 @@ test('submit_fact 指向非 open step 拒写（一轮只吃一个 open step）',
   );
 });
 
+test('ownerSession：其他会话不能 submit_fact / drop_step / change_priority', () => {
+  const { store, ctl } = seeded();
+  ctl.commit(ctl.apply(openStepOp({
+    action: '只属于 A',
+    from: ['fact_origin'],
+    ownerSession: 'sess-a',
+  })));
+  assert.equal(store.load().steps[0].ownerSession, 'sess-a');
+  const before = fs.readFileSync(store.graphPath, 'utf8');
+  assert.match(before, /ownerSession: "sess-a"/);
+  assert.throws(
+    () => ctl.apply(submitFactOp({
+      title: 't', content: 'c', producedBy: 'step_001', callerSession: 'sess-b',
+    })),
+    /跨会话绑定被拒/,
+  );
+  assert.throws(
+    () => ctl.apply(submitFactOp({ title: 't', content: 'c', producedBy: 'step_001' })),
+    /跨会话绑定被拒/,
+  );
+  assert.throws(
+    () => ctl.apply(dropStepOp({ stepId: 'step_001', reason: '别人要丢', callerSession: 'sess-b' })),
+    /跨会话绑定被拒/,
+  );
+  assert.throws(
+    () => ctl.apply(changePriorityOp({
+      stepId: 'step_001', priority: 'low', callerSession: 'sess-b',
+    })),
+    /跨会话绑定被拒/,
+  );
+  assert.equal(fs.readFileSync(store.graphPath, 'utf8'), before, '拒写不得落盘');
+  const graph = ctl.apply(submitFactOp({
+    title: 'A 自己收束', content: 'ok', producedBy: 'step_001', callerSession: 'sess-a',
+  }));
+  assert.equal(graph.steps[0].state, 'done');
+  assert.equal(graph.facts[1].producedBy, 'step_001');
+});
+
 test('submit_fact 收束会把 step 置 done 并回填 to', () => {
   const { ctl } = seededWithOpenStep();
   const graph = ctl.apply(submitFactOp({ title: '开放 80', content: '仅 80 开放', producedBy: 'step_001' }));

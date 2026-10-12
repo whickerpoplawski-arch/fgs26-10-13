@@ -56,6 +56,7 @@ export function graphToDoc(graph) {
     };
     if (s.to !== undefined && s.to !== null) d.to = s.to;
     if (s.reason !== undefined && s.reason !== null) d.reason = s.reason;
+    if (typeof s.ownerSession === 'string' && s.ownerSession.trim() !== '') d.ownerSession = s.ownerSession;
     return d;
   });
   return { facts, goals, steps };
@@ -90,6 +91,9 @@ export function graphFromDoc(doc) {
       createdAt: s.createdAt === undefined || s.createdAt === null ? '' : String(s.createdAt),
       to: s.to ?? null,
       reason: s.reason ?? null,
+      ownerSession: typeof s.ownerSession === 'string' && s.ownerSession.trim() !== ''
+        ? s.ownerSession
+        : null,
     })),
   };
 }
@@ -380,6 +384,9 @@ export class Controller {
       if (!factIds.has(fid)) throw new WriteRejected(`open_step.from 引用不存在 fact: ${fid}`);
     }
     if (!isValidPriority(op.priority)) throw new WriteRejected(`priority 非法: ${op.priority}`);
+    const ownerSession = typeof op.ownerSession === 'string' && op.ownerSession.trim() !== ''
+      ? op.ownerSession.trim()
+      : null;
     graph.steps.push({
       id: sid,
       action: op.action ?? '',
@@ -390,6 +397,7 @@ export class Controller {
       createdAt: nowIsoZ(),
       to: null,
       reason: null,
+      ownerSession,
     });
     return `open_step ${sid}`;
   }
@@ -400,6 +408,7 @@ export class Controller {
     if (step.state !== 'open') {
       throw new WriteRejected(`drop_step 目标非 open: ${op.stepId} state=${step.state}`);
     }
+    assertCallerOwns(step, op, 'drop_step');
     step.state = 'dropped';
     step.reason = op.reason;
     return `drop_step ${op.stepId}`;
@@ -411,6 +420,7 @@ export class Controller {
     if (step.state !== 'open') {
       throw new WriteRejected(`change_priority 目标非 open: ${op.stepId} state=${step.state}`);
     }
+    assertCallerOwns(step, op, 'change_step_priority');
     step.priority = op.priority;
     return `change_priority ${op.stepId} -> ${op.priority}`;
   }
@@ -427,6 +437,7 @@ export class Controller {
         `submit_fact.producedBy 指向非 open step: ${op.producedBy} state=${step.state}`,
       );
     }
+    assertCallerOwns(step, op, 'submit_fact');
     const fid = this.store.nextFactId(graph);
     if (graph.facts.some((f) => f.id === fid)) throw new WriteRejected(`fact id 已存在: ${fid}`);
     graph.facts.push({
@@ -531,6 +542,21 @@ export class Controller {
         `fact content 超 ${this.store.factContentMaxBytes} 字节且不是单个文件路径，拒写（CONTRACT §7）`,
       );
     }
+  }
+}
+
+/**
+ * 有主的 open step 只能由 ownerSession 改写。
+ * 没有 ownerSession 的旧 step 保持原行为（调用方未声明会话时不额外拦截），
+ * 以免把升级前的图卡死；新打开的 step 总会带上 owner。
+ */
+function assertCallerOwns(step, op, action) {
+  if (!hasText(step.ownerSession)) return;
+  if (op?.callerSession !== step.ownerSession) {
+    throw new WriteRejected(
+      `${action} 跨会话绑定被拒：step ${step.id} 的 ownerSession=${step.ownerSession}，`
+      + `调用方=${op?.callerSession ?? '(无)'}。只能由持有该 open step 的会话改写。`,
+    );
   }
 }
 

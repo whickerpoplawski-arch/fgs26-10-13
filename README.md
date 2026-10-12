@@ -101,7 +101,8 @@ tests/                      # node --test（离线，无外部依赖）
 
 ```
 <workspace>/.fgs/
-  competition.json                 # problems[] + activeProblemId
+  competition.json                 # problems[] + activeProblemId（运维回退，不是会话绑定）
+  session-bindings.json            # sessionId → problemId，各会话自己的活动题
   graph.yaml.bak                   # 仅旧布局迁移后留下的备份
   projects/<problemId>/
     graph.yaml                     # 该题主真相，顶层键仅 facts → goals → steps
@@ -113,7 +114,12 @@ tests/                      # node --test（离线，无外部依赖）
 
 `problemId` 会规范成 `[a-z0-9_-]{1,64}`（非法字符变成 `_`）。重复 id 拒绝创建。
 内存里的 run 以 `(sessionId, problemId)` 为键：草稿、角色、`roundSeq` 都随题分开。
+活动题也按会话绑定：子代理不会继承工作区的 `activeProblemId`。`activeProblemId` 只给不带
+`sessionId` 的 `/fgs/state` 做运维回退。
+打开 step 时写入 `ownerSession`。`submit_fact` / `commit_step` 只能收束本会话持有的 open step。
+Decide / Execute 每轮按「本会话是否还持有 open step」从图重算，不信任缓存的 `run.role`。
 「一轮只收束一个 open step」比对的是本 run 的 `roundSeq`，不是全局 DSH turn。
+本回合新打开的 step 可以在本回合收束；更早留下的第二个 step 仍会被拒。
 
 若磁盘上还是旧的单图 `.fgs/graph.yaml`、且还没有 `projects/`，第一次访问会把它迁到
 `projects/default/`（原文件留 `.bak`），并把 `default` 设为活动题。

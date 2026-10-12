@@ -50,7 +50,7 @@ export const PLUGIN_GENERATION = 6;
  * 之后再改代码，重启前后代次相同就区分不出新旧了（本项目踩过一次）。
  * `/fgs/state` 会原样返回 buildTag，重启后 curl 一眼即可确认新代码生效。
  */
-export const BUILD_TAG = '6+fgs-draft-visible+stepsOpened-guard+snapshot-role+project+attach+fgs-project-tool+switch-msg+lowercase-flag+submit-tool';
+export const BUILD_TAG = '6+fgs-draft-visible+stepsOpened-guard+snapshot-role+project+attach+fgs-project-tool+switch-msg+lowercase-flag+submit-tool+session-bind+owner-step+derived-role';
 
 /** 本插件只硬依赖 tools；其余服务可选接入。 */
 export const inject = ['tools'];
@@ -142,15 +142,18 @@ const FGS_RULES = [
   '本项目使用 FGS 黑板：事实(Fact) → 步骤(Step) → 新事实(Fact)。Goal 不连边，只被 satisfy_goal 引用。',
   '图是唯一真记忆，按题隔离在 workspace 的 .fgs/projects/<problemId>/graph.yaml；顶层键只有 facts/goals/steps。',
   '建题/换题用 fgs_project（action=new|switch|list；new 时给 brief 就直接种题），人也可以打 /fgs new <problemId> [brief]。',
-  '磁盘上已种题的 Project 会被自动认领（重启/换会话后不用重新种题）；没有活动 Project 时不能改图。',
+  '活动题按会话绑定：本会话 new/switch 过的 Project 重启后自动认领；',
+  '别的会话（含子代理）不会继承本会话的活动题，要上同一块黑板必须自己 fgs_project action=switch。',
+  '没有绑定 Project 时不能改图。',
   '',
-  '角色由图的 open step 自动决定，工具集随之切换（越权调用在 dispatch 层被硬拒）：',
-  '- 无 open step → Decide：只做规划/改图。除规划类工具与少量元工具外一律被拒，',
+  '角色由「本会话是否持有 open step」决定，每轮按图重算，不看缓存标签，也不看别人的 step：',
+  '- 本会话没有持有的 open step → Decide：只做规划/改图。除规划类工具与少量元工具外一律被拒，',
   '  包括 bash/read/write/edit/glob/grep 以及 web_fetch/web_search/subagent/workflow。',
   '  用 fgs_open_step / fgs_drop_step / fgs_change_step_priority / fgs_satisfy_goal / fgs_reopen 记草稿，',
   '  最后用 fgs_commit 一次性提交（草稿为空时 commit 可传 operations[] 批量）。',
-  '- 有 open step → Execute：一轮只推进一个 open step，用 fgs_submit_fact 落新 Fact，',
+  '- 本会话持有 open step → Execute：只收束自己的 step。用 fgs_submit_fact 落新 Fact，',
   '  再用 fgs_commit_step 收束；无产出也必须落一条显式失败/观察 Fact。',
+  '  submit_fact / commit_step 绑定别人的 open step 会被拒。',
   '',
   '硬约束：',
   '- open_step 必须给 from（存在的 fact id）；step.from 为空直接拒写。',
@@ -239,12 +242,9 @@ function projectSeeded(registry, problemId, cfg) {
 /**
  * 认领（attach）：图工具 / 状态查询 / 运行时上下文的统一入口。
  *
- * 为什么必须「按磁盘自动认领」：run 只在 create=true（fgs_seed / /fgs new）时建，
- * 而重启或换会话后内存里没有 run，磁盘上的 Project 却已经种好题。此时旧实现会：
- *   guard   → 「FGS 未启动：先 fgs_seed 种题，再使用图工具」
- *   fgs_seed→ 「已经种过题」并报错
- * 两句提示自相矛盾，只看错误信息的自主 agent 会卡死在这个循环里
- * （只有「对一个已报错的操作再重试一次」才偶然恢复）。
+ * 活动题是会话绑定（`.fgs/session-bindings.json`），不是工作区的 activeProblemId。
+ * 同一 cwd 下的子代理会话不会继承 Lead 的题；重启后只恢复「这个 sessionId」自己绑过的题。
+ * 这样磁盘上已种题的 Project 仍能被原会话直接认领，又不会让所有会话抢同一条 open step。
  *
  * reason 取值：no-cwd | no-project | detached | unseeded | attached | live
  * detached 只由 /fgs off 打上，用来挡住 /fgs off 之后的自动再认领。
@@ -253,7 +253,7 @@ function attachRun(agent, cfg, runs, registries, detached, problemId = undefined
   const registry = registryFor(agent, cfg, registries);
   if (!registry) return { registry: null, problemId: null, run: null, reason: 'no-cwd' };
   const explicit = problemId !== undefined && problemId !== null && String(problemId) !== '';
-  const id = explicit ? registry.normalizeId(problemId) : registry.getActive();
+  const id = explicit ? registry.normalizeId(problemId) : registry.getSessionProblem(sessionIdOf(agent));
   if (!id || !registry.isValidId(id) || !registry.exists(id)) {
     return { registry, problemId: id ?? null, run: null, reason: 'no-project' };
   }
@@ -290,6 +290,7 @@ function projectNew(agent, cfg, runs, registries, detached, rawId, brief, extra 
       return { ok: false, text: `Project 已存在: ${id}（换题用 fgs_project action=switch，或 /fgs switch ${id}）` };
     }
     registry.setActive(id);
+    registry.bindSession(sessionIdOf(agent), id);
   } catch (error) {
     return { ok: false, text: error.message };
   }
@@ -337,6 +338,7 @@ function projectSwitch(agent, cfg, runs, registries, detached, rawId) {
   if (!id || !registry.exists(id)) return { ok: false, text: `Project 不存在: ${id}` };
   try {
     registry.setActive(id);
+    registry.bindSession(sessionIdOf(agent), id);
   } catch (error) {
     return { ok: false, text: error.message };
   }
@@ -357,14 +359,16 @@ function projectList(agent, cfg, runs, registries) {
   if (items.length === 0) {
     return { ok: true, text: '（无 Project）用 fgs_project action=new problemId=<id> brief=<题目> 建立。' };
   }
-  const activeId = registry.getActive();
+  const boundId = registry.getSessionProblem(sessionIdOf(agent));
+  const activeId = boundId || registry.getActive();
+  const sid = sessionIdOf(agent);
   const lines = items.map((item) => {
     const mark = item.id === activeId ? '*' : ' ';
     try {
       const store = new GraphStore(registry.projectRoot(item.id), cfg);
       const graph = store.load();
       const seeded = graph.facts.length > 0 || graph.goals.length > 0 || graph.steps.length > 0;
-      const role = seeded ? roleLabel(derivedRole(graph)) : 'unseeded';
+      const role = seeded ? roleLabel(sessionRole(graph, sid)) : 'unseeded';
       const open = openStepsOf(graph).length;
       const satisfied = goalSatisfied(graph) ? 'yes' : 'no';
       return `${mark} ${item.id}  title=${item.title}  role=${role}  open=${open}  satisfied=${satisfied}  state=${item.state}`;
@@ -389,8 +393,11 @@ function createRun(agent, cfg, registry, problemId) {
     store,
     controller,
     role: 'decide',
+    derivedRole: 'decide',
+    graphSeeded: false,
     decideDraft: [],
     execDraft: null,
+    draftNotice: null,
     currentStepId: null,
     reachable: false,
     touchedAt: Date.now(),
@@ -410,7 +417,7 @@ function runFor(agent, cfg, runs, registries, create = false, problemId = undefi
   const registry = registryFor(agent, cfg, registries);
   if (!registry) return null;
   const explicit = problemId !== undefined && problemId !== null && String(problemId) !== '';
-  const id = explicit ? registry.normalizeId(problemId) : registry.getActive();
+  const id = explicit ? registry.normalizeId(problemId) : registry.getSessionProblem(sessionIdOf(agent));
   if (!id || !registry.isValidId(id) || !registry.exists(id)) return null;
   const key = runKey(sessionIdOf(agent), id);
   let run = runs.get(key);
@@ -570,18 +577,67 @@ function goalSatisfied(graph) {
   return Boolean(goal?.satisfiedAt);
 }
 
-/** 角色由图状态推导：有 open step → execute，否则 decide。 */
+/** 本会话持有的 open step（ownerSession 必须等于 sid）。别人的 step 不算。 */
+function stepsOwnedBy(graph, sessionId) {
+  if (!sessionId || sessionId === 'unknown') return [];
+  return openStepsOf(graph).filter((s) => s.ownerSession === sessionId);
+}
+
+/** Decide/Execute 只看本会话有没有自己的 open step，不看整张图上是否还有别人的。 */
+function sessionRole(graph, sessionId) {
+  return stepsOwnedBy(graph, sessionId).length > 0 ? 'execute' : 'decide';
+}
+
+/** 草稿指向的 step 已结束或不属于本会话时丢掉，并留下给 fgs_status 的告警。 */
+function sweepStaleDraft(run, graph) {
+  if (!run?.execDraft) return;
+  const step = (graph.steps ?? []).find((s) => s.id === run.execDraft.stepId);
+  const live = Boolean(step && step.state === 'open' && step.ownerSession === run.sid);
+  if (!live) {
+    run.execDraft = null;
+    run.draftNotice = '已回收僵尸草稿：它指向的 step 已不是本会话持有的 open step。';
+  }
+}
+
+/**
+ * 按图重算本会话的角色与 currentStepId。
+ * 守卫、上下文、写路径都走这里，不信任上一次留下的 run.role。
+ */
 function refreshRole(run) {
   const graph = run.store.load();
-  run.role = openStepsOf(graph).length > 0 ? 'execute' : 'decide';
-  if (run.role === 'execute') {
-    if (!run.currentStepId || !openStepsOf(graph).some((s) => s.id === run.currentStepId)) {
-      run.currentStepId = openStepsOf(graph)[0]?.id ?? null;
+  const seeded = graph.facts.length > 0 || graph.goals.length > 0 || graph.steps.length > 0;
+  run.graphSeeded = seeded;
+  sweepStaleDraft(run, graph);
+  const owned = stepsOwnedBy(graph, run.sid);
+  const derived = owned.length > 0 ? 'execute' : 'decide';
+  run.derivedRole = derived;
+  run.role = derived;
+  if (derived === 'execute') {
+    if (!run.currentStepId || !owned.some((s) => s.id === run.currentStepId)) {
+      run.currentStepId = owned[0].id;
     }
   } else {
     run.currentStepId = null;
   }
   return graph;
+}
+
+/** 打开 step / 收束 step 时盖上调用方会话，模型传进来的 owner 一律作废。 */
+function stampSession(op, sid) {
+  const next = { ...op, callerSession: sid };
+  if (next.type === 'open_step' && sid && sid !== 'unknown') next.ownerSession = sid;
+  return next;
+}
+
+/** 本回合新开的 step 允许在同一回合收束（否则先收后开会留下无主 open step）。 */
+function openedThisRound(run, stepId, round, limited) {
+  return Boolean(
+    limited
+    && stepId
+    && run.stepsOpenedRound === round
+    && run.stepsOpenedIds instanceof Set
+    && run.stepsOpenedIds.has(stepId),
+  );
 }
 
 function draftSummary(run) {
@@ -645,11 +701,6 @@ function loadIoSchema(role) {
 
 /* ------------------------------------------------------------- 图快照 */
 
-/** 角色由「图」唯一决定（≥1 个 open step ⇒ Execute，否则 Decide）——不读内存缓存。 */
-function derivedRole(graph) {
-  return openStepsOf(graph).length > 0 ? 'execute' : 'decide';
-}
-
 /** 「本会话没在跑 FGS」的统一快照（Client 据此渲染「未启动」）。 */
 function inactivePayload() {
   return {
@@ -660,17 +711,32 @@ function inactivePayload() {
   };
 }
 
+function visibleStepId(graph, run) {
+  const cached = run.currentStepId ?? null;
+  if (!cached) return stepsOwnedBy(graph, run.sid)[0]?.id ?? null;
+  const step = (graph.steps ?? []).find((s) => s.id === cached);
+  if (step && step.state === 'open' && step.ownerSession === run.sid) return step.id;
+  return stepsOwnedBy(graph, run.sid)[0]?.id ?? null;
+}
+
 function graphSnapshot(run) {
   const graph = run.store.load();
   const open = openStepsOf(graph);
-  // 角色一律从「图」推导（≥1 个 open step ⇒ Execute，否则 Decide），不报内存缓存值：
-  // 图被外部改动/删除时缓存会和图对不上，面板就会出现 execute + 0 steps 这种自相矛盾状态。
-  const role = derivedRole(graph);
   // 空图 = 本会话还没种题（或图文件被外部删除）：按「未启动」上报，
   // 让 Client 走它自己的「未启动」分支，而不是渲染成一条矛盾的黑板条。
   if (graph.facts.length === 0 && graph.goals.length === 0 && graph.steps.length === 0) {
     return inactivePayload();
   }
+  // runRole 是刷新前的缓存。derivedRole 按「本会话持有的 open step」从图重算。
+  // currentStepId 指向已 done / 别人的 step 时必须是 null，不能把陈旧指针报出去。
+  const runRole = typeof run.role === 'string' ? run.role : null;
+  sweepStaleDraft(run, graph);
+  const role = sessionRole(graph, run.sid);
+  const currentStepId = visibleStepId(graph, run);
+  run.derivedRole = role;
+  run.role = role;
+  run.currentStepId = currentStepId;
+  run.graphSeeded = true;
   return {
     active: true,
     pluginGeneration: PLUGIN_GENERATION,
@@ -681,16 +747,20 @@ function graphSnapshot(run) {
     workspaceDir: run.workspaceDir ?? null,
     roundSeq: run.roundSeq ?? 0,
     role,
+    derivedRole: role,
+    runRole,
     roleLabel: roleLabel(role),
     reachable: run.reachable,
     satisfied: goalSatisfied(graph),
-    currentStepId: run.currentStepId,
+    currentStepId,
     draft: draftSummary(run),
+    draftNotice: run.draftNotice ?? null,
     counts: {
       facts: graph.facts.length,
       goals: graph.goals.length,
       steps: graph.steps.length,
       open: open.length,
+      owned: stepsOwnedBy(graph, run.sid).length,
     },
     facts: graph.facts.map((f) => ({ id: f.id, title: f.title })),
     goals: graph.goals.map((g) => ({
@@ -707,6 +777,7 @@ function graphSnapshot(run) {
       state: s.state,
       priority: s.priority,
       to: s.to ?? null,
+      ownerSession: s.ownerSession ?? null,
     })),
     updatedAt: new Date().toISOString(),
   };
@@ -771,7 +842,7 @@ function registerTools(ctx, cfg, runs, registries, detached) {
         return fail('fgs_seed 需要非空 brief。');
       }
       const registry = registryFor(exec?.agent, cfg, registries);
-      if (!registry?.getActive()) {
+      if (!registry?.getSessionProblem(sessionIdOf(exec?.agent))) {
         return fail('FGS 未启动：没有活动 Project。先 fgs_project action=new problemId=<id>（或 /fgs new <id>）。');
       }
       const run = runFor(exec?.agent, cfg, runs, registries, true);
@@ -826,25 +897,31 @@ function registerTools(ctx, cfg, runs, registries, detached) {
             + `重新进入用 fgs_project action=switch problemId=${problemId}）。`
           : `FGS 未启动（Project ${problemId} 尚未种题）。`);
       }
-      const graph = run.store.load();
+      const graph = refreshRole(run);
       // 图被外部删除 → 与「从未种题」同义，别报着缓存角色说自己在 Execute
       if (graph.facts.length === 0 && graph.goals.length === 0 && graph.steps.length === 0) {
         return ok('FGS 未启动（图为空：尚未种题，或图文件已被移除）。');
       }
-      const role = derivedRole(graph);
+      const role = run.role;
       const lines = [
         `Project: ${run.problemId}`,
         `角色: ${roleLabel(role)}`,
         `图: ${path.join(run.root, 'graph.yaml')}`,
         `workspace: ${run.workspaceDir}`,
         `goal_final satisfied: ${goalSatisfied(graph) ? 'yes' : 'no'}`,
-        `facts=${graph.facts.length} steps=${graph.steps.length} open=${openStepsOf(graph).length}`,
+        `facts=${graph.facts.length} steps=${graph.steps.length} open=${openStepsOf(graph).length} owned=${stepsOwnedBy(graph, run.sid).length}`,
       ];
       for (const step of openStepsOf(graph)) {
-        lines.push(`  open ${step.id} [${step.priority}] ${step.action}`);
+        const who = step.ownerSession ? ` owner=${step.ownerSession}` : '';
+        lines.push(`  open ${step.id} [${step.priority}]${who} ${step.action}`);
+      }
+      const foreign = openStepsOf(graph).filter((s) => s.ownerSession && s.ownerSession !== run.sid);
+      if (foreign.length > 0) {
+        lines.push(`其他会话 open: ${foreign.map((s) => `${s.id}@${s.ownerSession}`).join(', ')}（不可绑定）`);
       }
       const draft = draftSummary(run);
       if (draft) lines.push(`草稿: ${draft}`);
+      if (run.draftNotice) lines.push(`告警: ${run.draftNotice}`);
       return ok(lines.join('\n'));
     },
   }));
@@ -1070,8 +1147,9 @@ function registerTools(ctx, cfg, runs, registries, detached) {
       let working = graph;
       for (const op of ops) {
         let next;
+        const stamped = stampSession(op, run.sid);
         try {
-          next = run.controller.apply(op, working);
+          next = run.controller.apply(stamped, working);
         } catch (error) {
           if (error instanceof WriteRejected) {
             if (args.clearDraftOnFailure === true) run.decideDraft = [];
@@ -1100,12 +1178,12 @@ function registerTools(ctx, cfg, runs, registries, detached) {
       refreshRole(run);
       const satisfied = goalSatisfied(working);
       if (satisfied && typeof exec?.concludeTurn === 'function') exec.concludeTurn();
-      const openNow = openStepsOf(working);
+      const mine = stepsOwnedBy(working, run.sid);
       const tail = satisfied
         ? 'goal_final 已满足，停止。'
-        : (openNow.length > 0
-          ? `下一步进入 Execute：${openNow[0].id} [${openNow[0].priority}] ${openNow[0].action}`
-          : '暂无 open step：继续 Decide。');
+        : (mine.length > 0
+          ? `下一步进入 Execute：${mine[0].id} [${mine[0].priority}] ${mine[0].action}`
+          : '本会话没有持有的 open step：继续 Decide。');
       return ok(`已提交 ${applied.length} 项: ${applied.join(', ')}\n${tail}`);
     },
   }));
@@ -1127,8 +1205,9 @@ function registerTools(ctx, cfg, runs, registries, detached) {
     },
     run: (args, exec) => {
       const run = active(exec);
+      refreshRole(run);
       if (run.role !== 'execute') {
-        return fail('当前不是 Execute 轮（没有 open step）。先 Decide 开 step。');
+        return fail('当前不是 Execute 轮（没有本会话持有的 open step）。先 Decide 开 step。');
       }
       const graph = run.store.load();
       const resolved = resolveRoundStep(run, graph, args.stepId);
@@ -1143,6 +1222,7 @@ function registerTools(ctx, cfg, runs, registries, detached) {
         throw error;
       }
       run.execDraft = { title, content, stepId: step.id };
+      run.draftNotice = null;
       return ok(`已记入本轮草稿: producedBy=${step.id}。结束时调用 fgs_commit_step 收束。`);
     },
   }));
@@ -1160,10 +1240,16 @@ function registerTools(ctx, cfg, runs, registries, detached) {
     },
     run: (args, exec) => {
       const run = active(exec);
+      refreshRole(run);
       const { round, limited } = observeRound(run, turnOf(ctx, exec?.agent));
-      // CONTRACT §5：一轮只吃一个 open step。判据是本 Project run 的 roundSeq，
-      // 不用全局 turn 数字，避免同会话多题互相误拦（G8）。
-      if (limited && run.lastCommitRound === round) {
+      const graph = run.store.load();
+      const resolved = resolveRoundStep(run, graph, args.stepId ?? run.execDraft?.stepId);
+      if (resolved.error) return fail(resolved.error);
+      const step = resolved.step;
+      // CONTRACT §5：一轮只吃一个「先前回合留下的」open step。
+      // 本回合刚刚打开的 step 允许在本回合收束，否则先收后开会把新 step 留成孤儿。
+      const sameTurnOpen = openedThisRound(run, step.id, round, limited);
+      if (limited && run.lastCommitRound === round && !sameTurnOpen) {
         return fail('一轮只吃一个 open step（CONTRACT §5）：本回合已经收束过 step 了。\n'
           + '⚠️ **继续在本回合硬推下一个 step 是记不进黑板的** —— 本回合后续所有 '
           + 'fgs_commit_step 都会被拒，你这一段的发现会全部丢失（实测过：多 flag 题的'
@@ -1171,12 +1257,9 @@ function registerTools(ctx, cfg, runs, registries, detached) {
           + '正确做法，二选一：\n'
           + '  a) 现在结束本回合：停止调用工具让本回合收口，下一回合再推进下一个 open step；\n'
           + '  b) 如果手里还有未落盘的发现，先用 fgs_submit_fact 把它写成草稿（草稿会跨回合保留），\n'
-          + '     下一回合开头直接 fgs_commit_step 即可落盘。');
+          + '     下一回合开头直接 fgs_commit_step 即可落盘。\n'
+          + '本回合新开的 step 可以在本回合收束；上面这条拒绝只针对更早留下的 step。');
       }
-      const graph = run.store.load();
-      const resolved = resolveRoundStep(run, graph, args.stepId ?? run.execDraft?.stepId);
-      if (resolved.error) return fail(resolved.error);
-      const step = resolved.step;
       const draft = run.execDraft ?? {
         title: `${step.id} 无有效产出（观察）`,
         content: `step ${step.id} 结束前没有 fgs_submit_fact；按契约 §5 落一条显式观察 Fact。`,
@@ -1186,19 +1269,27 @@ function registerTools(ctx, cfg, runs, registries, detached) {
         title: draft.title,
         content: draft.content,
         producedBy: step.id,
+        callerSession: run.sid,
       });
       try {
         const next = run.controller.apply(op, graph);
         run.controller.commit(next);
         run.execDraft = null;
+        run.draftNotice = null;
         run.currentStepId = null;
         if (limited) run.lastCommitRound = round;
         syncProjectMeta(registryFor(exec?.agent, cfg, registries), run, next);
         refreshRole(run);
-        const remainder = openStepsOf(next);
-        const tail = remainder.length > 0
-          ? `仍有 ${remainder.length} 个 open step；本回合到此为止，下一回合再推进 ${remainder[0].id}。`
-          : 'open step 已清空，回到 Decide。';
+        const mine = stepsOwnedBy(next, run.sid);
+        const others = openStepsOf(next).filter((s) => s.ownerSession !== run.sid);
+        let tail;
+        if (mine.length > 0) {
+          tail = `本会话仍持有 ${mine.length} 个 open step；本回合到此为止，下一回合再推进 ${mine[0].id}。`;
+        } else if (others.length > 0) {
+          tail = `本会话的 open step 已清空，回到 Decide。板上另有 ${others.length} 个其他会话的 open step，不可绑定。`;
+        } else {
+          tail = 'open step 已清空，回到 Decide。';
+        }
         return ok(`定稿: step ${step.id} → 新 Fact。\n${tail}`);
       } catch (error) {
         if (error instanceof WriteRejected) return fail(`commit_step 拒收: ${error.message}`);
@@ -1238,10 +1329,18 @@ function stageDecideOp(run, op) {
 }
 
 function pickStep(run, graph, stepId) {
-  const open = openStepsOf(graph);
+  const owned = stepsOwnedBy(graph, run.sid);
+  if (stepId) {
+    const target = (graph.steps ?? []).find((s) => s.id === stepId);
+    if (target && target.ownerSession && target.ownerSession !== run.sid) {
+      return {
+        error: `拒收：step ${stepId} 由会话 ${target.ownerSession} 持有，本会话不得绑定（跨会话错位）。`,
+      };
+    }
+  }
   // 本轮 step 一旦确定就不许换：显式 stepId 与当前 step 不一致 → 返回错误而不是静默替换
   if (run.currentStepId) {
-    const current = open.find((s) => s.id === run.currentStepId);
+    const current = owned.find((s) => s.id === run.currentStepId);
     if (current) {
       if (stepId && stepId !== current.id) {
         return {
@@ -1253,12 +1352,19 @@ function pickStep(run, graph, stepId) {
     }
   }
   if (stepId) {
-    const found = open.find((s) => s.id === stepId);
+    const found = owned.find((s) => s.id === stepId);
     if (!found) return { error: `step ${stepId} 不是 open step，无法收束。` };
     return { step: found };
   }
-  const first = open[0] ?? null;
-  return first ? { step: first } : { error: '没有可收束的 open step。' };
+  const first = owned[0] ?? null;
+  if (first) return { step: first };
+  const foreign = openStepsOf(graph).filter((s) => s.ownerSession && s.ownerSession !== run.sid);
+  if (foreign.length > 0) {
+    return {
+      error: `没有本会话持有的 open step（${foreign.map((s) => `${s.id}@${s.ownerSession}`).join(', ')} 属于其他会话，拒绝跨会话绑定）。`,
+    };
+  }
+  return { error: '没有可收束的 open step。' };
 }
 
 function resolveRoundStep(run, graph, stepId) {
@@ -1274,10 +1380,10 @@ function resolveRoundStep(run, graph, stepId) {
  * 失败只记账不抛：收束失败绝不能阻断回合结束。
  */
 function forceCloseStep(run, turn, registry) {
+  const graph = refreshRole(run);
   const { round, limited } = observeRound(run, turn);
   if (run.role !== 'execute') return false;
   if (limited && run.lastCommitRound === round) return false; // 本回合已收束过
-  const graph = run.store.load();
   const resolved = pickStep(run, graph, run.execDraft?.stepId ?? run.currentStepId);
   if (resolved.error || !resolved.step) return false;
   const step = resolved.step;
@@ -1293,7 +1399,12 @@ function forceCloseStep(run, turn, registry) {
     stepId: step.id,
   };
   const next = run.controller.apply(
-    submitFactOp({ title: draft.title, content: draft.content, producedBy: step.id }),
+    submitFactOp({
+      title: draft.title,
+      content: draft.content,
+      producedBy: step.id,
+      callerSession: run.sid,
+    }),
     graph,
   );
   run.controller.commit(next);
@@ -1361,6 +1472,18 @@ export function apply(ctx, config = {}) {
     // 控制面：建题 / 换题 / 列题。没有活动 Project 时正是要用它，所以任何状态都放行。
     if (PROJECT_TOOLS.includes(tool)) return undefined;
     const { problemId, run, reason } = activeRun(exec?.agent);
+    if (run) {
+      try {
+        refreshRole(run);
+      } catch {
+        // 图读不出来时按 Decide 失败关闭：环境工具不放行，避免缓存角色把禁令绕开。
+        run.role = 'decide';
+        run.derivedRole = 'decide';
+        run.graphSeeded = true;
+        run.currentStepId = null;
+      }
+    }
+    const role = run?.role;
     if (GRAPH_TOOL_NAMES.includes(tool)) {
       if (!problemId) {
         return tool === 'fgs_status'
@@ -1373,8 +1496,8 @@ export function apply(ctx, config = {}) {
           ? 'FGS 已 /fgs off（本会话退出了 FGS）。重新进入用 fgs_project action=switch problemId=<id>。'
           : 'FGS 未启动：先 fgs_seed（或 /fgs init <brief>）种题，再使用图工具。';
       }
-      if (!(ROLE_TOOLS[run.role] ?? []).includes(tool)) {
-        return run.role === 'execute'
+      if (!(ROLE_TOOLS[role] ?? []).includes(tool)) {
+        return role === 'execute'
           ? `FGS 角色隔离：当前 Execute 轮不得调用 ${tool}（CONTRACT §5）。`
             + ' 本轮请用 fgs_submit_fact 落 Fact，再用 fgs_commit_step 收束。'
           : `FGS 角色隔离：当前 Decide 轮不得调用 ${tool}（CONTRACT §4）。`
@@ -1385,7 +1508,8 @@ export function apply(ctx, config = {}) {
     }
     // CONTRACT §4：Decide 只做规划/改图。白名单之外的工具一律拒
     //（含 bash/文件/网络/subagent/workflow —— 它们能间接执行环境动作）。
-    if (run && run.role === 'decide') {
+    // 空图（未种题 / 图被删）不算 Decide 会话，避免把「未启动」误伤成环境工具禁令。
+    if (run && role === 'decide' && run.graphSeeded) {
       if (cfg.deniedEnvTools.includes(tool)) {
         return `FGS Decide 会话禁止环境执行工具 ${tool}（CONTRACT §4）：`
           + ' Decide 只做规划/改图；需要执行时先 fgs_open_step + fgs_commit 打开 step，'
@@ -1408,6 +1532,7 @@ export function apply(ctx, config = {}) {
       const { registry, run } = activeRun(agent);
       if (!run) return;
       forceCloseStep(run, turnOf(ctx, agent), registry);
+      sweepStaleDraft(run, run.store.load());
     } catch {
       /* 收束失败不得阻断回合结束 */
     }
@@ -1428,7 +1553,13 @@ export function apply(ctx, config = {}) {
     let n = 0;
     for (const run of runs.values()) {
       try {
-        if (!run || run.role !== 'execute') continue;
+        if (!run) continue;
+        try {
+          refreshRole(run);
+        } catch {
+          continue;
+        }
+        if (run.role !== 'execute') continue;
         if (!run.currentStepId && !run.execDraft) continue;
         if (!run.execDraft) {
           // 没有草稿时**不要**假装"无有效产出"（那会误导：本轮可能已经拿到 flag）。
@@ -1495,14 +1626,16 @@ export function apply(ctx, config = {}) {
         const { run } = activeRun(scope);
         if (!run || run.sid !== sid) return '';
         try {
-          const graph = run.store.load();
-          const current = graph.steps.find((s) => s.id === run.currentStepId) ?? null;
+          const graph = refreshRole(run);
+          const current = (graph.steps ?? []).find((s) => s.id === run.currentStepId && s.state === 'open') ?? null;
           return roleContextText({
             role: run.role,
             store: run.store,
             graph,
             currentStep: current,
             draftSummary: draftSummary(run),
+            draftNotice: run.draftNotice || '',
+            sessionId: run.sid,
             ioSpec: ioSchemaFor(run.role),
           });
         } catch (error) {

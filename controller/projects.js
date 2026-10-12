@@ -170,6 +170,106 @@ export class ProjectRegistry {
     return id;
   }
 
+  /**
+   * 会话 → Project 绑定。活动题不再是工作区单例：
+   * 每个 session 只认领自己 switch/new 过的题，子代理不会继承别人的 activeProblemId。
+   * 落在 `.fgs/session-bindings.json`，重启后按 sessionId 恢复，而不是按全局活动题。
+   */
+  bindingsPath() {
+    return path.join(this.root, 'session-bindings.json');
+  }
+
+  readBindings() {
+    const file = this.bindingsPath();
+    if (!fs.existsSync(file)) return Object.create(null);
+    let parsed;
+    try {
+      parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch (error) {
+      throw new Error(`session-bindings.json 无法解析: ${error.message}`);
+    }
+    const raw = parsed?.bindings;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return Object.create(null);
+    const out = Object.create(null);
+    for (const [sid, problemId] of Object.entries(raw)) {
+      if (typeof sid === 'string' && sid !== '' && typeof problemId === 'string') {
+        out[sid] = problemId;
+      }
+    }
+    return out;
+  }
+
+  writeBindings(bindings) {
+    fs.mkdirSync(this.root, { recursive: true });
+    atomicWrite(this.bindingsPath(), `${JSON.stringify({ bindings }, null, 2)}\n`);
+  }
+
+  withBindingsLock(fn) {
+    fs.mkdirSync(this.root, { recursive: true });
+    const lockPath = path.join(this.root, 'session-bindings.lock');
+    const deadline = Date.now() + 5_000;
+    let acquired = false;
+    for (;;) {
+      try {
+        const fd = fs.openSync(lockPath, 'wx');
+        fs.closeSync(fd);
+        acquired = true;
+        break;
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        try {
+          const age = Date.now() - fs.statSync(lockPath).mtimeMs;
+          if (age > 10_000) {
+            fs.unlinkSync(lockPath);
+            continue;
+          }
+        } catch {
+          continue;
+        }
+        if (Date.now() > deadline) throw new Error(`获取 session 绑定锁超时: ${lockPath}`);
+        const until = Date.now() + 20;
+        while (Date.now() < until) {
+          /* 同步等待极小间隔 */
+        }
+      }
+    }
+    try {
+      return fn();
+    } finally {
+      if (acquired) {
+        try {
+          fs.unlinkSync(lockPath);
+        } catch {
+          /* 已被清理 */
+        }
+      }
+    }
+  }
+
+  /** 把本会话绑到某题。不改其他会话的绑定。 */
+  bindSession(sessionId, problemId) {
+    if (typeof sessionId !== 'string' || sessionId === '' || sessionId === 'unknown') return null;
+    const slug = this.normalizeId(problemId);
+    if (!this.isValidId(slug) || !this.exists(slug)) {
+      throw new Error(`Project 不存在: ${slug || problemId || ''}`);
+    }
+    this.withBindingsLock(() => {
+      const bindings = this.readBindings();
+      bindings[sessionId] = slug;
+      this.writeBindings(bindings);
+    });
+    return slug;
+  }
+
+  /** 本会话绑定的 Project。没有绑定、或题已不存在 → null。不回退到 activeProblemId。 */
+  getSessionProblem(sessionId) {
+    if (typeof sessionId !== 'string' || sessionId === '' || sessionId === 'unknown') return null;
+    const id = this.readBindings()[sessionId];
+    if (!id || !this.isValidId(id)) return null;
+    if (!this.exists(id)) return null;
+    return id;
+  }
+
   readMeta(id) {
     const file = path.join(this.projectRoot(id), 'meta.json');
     if (!fs.existsSync(file)) return null;
